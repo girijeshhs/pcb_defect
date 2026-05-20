@@ -1,7 +1,9 @@
 """
 PCB Defect Detection — Streamlit Client
-FastAPI backend: http://127.0.0.1:8000/inspect
+FastAPI backend: reads from API_URL env var (default: http://127.0.0.1:8000/inspect)
 """
+
+import os
 
 import cv2
 import numpy as np
@@ -10,7 +12,10 @@ import streamlit as st
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-API_URL = "http://127.0.0.1:8000/inspect"
+# Inside Docker, Compose sets API_URL=http://api:8000/inspect so the client
+# reaches the backend via Docker's internal DNS (service name = hostname).
+# Locally, the fallback points to localhost for direct uvicorn runs.
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000/inspect")
 
 # BGR tuples (not RGB) — cv2 drawing functions operate in BGR colour space.
 # Colours chosen for contrast against the dark green PCB solder-mask layer.
