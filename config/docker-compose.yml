@@ -3,13 +3,13 @@ services:
   # ── Backend — FastAPI / ONNX Runtime ────────────────────────────────────────
   api:
     build:
-      context: .
-      dockerfile: backend.Dockerfile
+      context: ..
+      dockerfile: config/backend.Dockerfile
     container_name: pcb_api
     ports:
       - "8000:8000"
     volumes:
-      - ./models:/app/models:ro
+      - ../models:/app/models:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python3", "-c",
@@ -22,14 +22,13 @@ services:
   # ── Frontend — Streamlit ────────────────────────────────────────────────────
   client:
     build:
-      context: .
-      dockerfile: frontend.Dockerfile
+      context: ..
+      dockerfile: config/frontend.Dockerfile
     container_name: pcb_client
     ports:
       - "8501:8501"
     environment:
       - API_URL=http://api:8000/inspect
-      - REPORT_URL=http://api:8000/generate_report
     depends_on:
       api:
         condition: service_healthy   # wait until /health passes before starting

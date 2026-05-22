@@ -9,14 +9,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY config/requirements.txt .
 RUN pip install --no-cache-dir \
         streamlit \
         requests \
         opencv-python \
         numpy
 
-COPY app.py .
+COPY frontend/app.py .
 
 EXPOSE 8501
 

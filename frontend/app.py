@@ -6,6 +6,7 @@ Analytics tab: reads directly from inspections.db via sqlite3 + pandas
 
 import os
 import sqlite3
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -16,8 +17,7 @@ import streamlit as st
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 API_URL     = os.getenv("API_URL",    "http://127.0.0.1:8000/inspect")
-REPORT_URL  = os.getenv("REPORT_URL", "http://127.0.0.1:8000/generate_report")
-DB_PATH     = os.getenv("DB_PATH",    "./inspections.db")
+DB_PATH     = Path(os.getenv("DB_PATH", str(Path(__file__).resolve().parent.parent / "inspections.db")))
 
 DEFECT_COLORS = {
     "falsecopper":  (0,   200, 255),
@@ -98,7 +98,7 @@ def call_api(img_bgr: np.ndarray, filename: str) -> dict:
 
 def load_inspection_history() -> pd.DataFrame:
     """Read all inspection records from SQLite and return a tidy DataFrame."""
-    if not os.path.exists(DB_PATH):
+    if not DB_PATH.exists():
         return pd.DataFrame()
     with sqlite3.connect(DB_PATH) as con:
         df = pd.read_sql_query(
