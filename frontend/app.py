@@ -163,7 +163,20 @@ tab_inspect, tab_analytics = st.tabs(["🔬 Live Inspection", "📊 Analytics Da
 # ══ Tab 1: Live Inspection ═════════════════════════════════════════════════════
 
 with tab_inspect:
-    uploaded = st.file_uploader("Upload a PCB image", type=["jpg","jpeg","png","bmp","tiff"])
+    if "uploader_key" not in st.session_state:
+        st.session_state["uploader_key"] = 0
+
+    u1, u2 = st.columns([4, 1])
+    uploaded = u1.file_uploader(
+        "Upload a PCB image",
+        type=["jpg", "jpeg", "png", "bmp", "tiff"],
+        key=f"uploader_{st.session_state['uploader_key']}",
+    )
+    if u2.button("Clear analysis"):
+        st.session_state.pop("last_upload_sig", None)
+        st.session_state.pop("last_result", None)
+        st.session_state["uploader_key"] += 1
+        st.rerun()
 
     if uploaded:
         raw_bytes = uploaded.getvalue()
@@ -237,7 +250,14 @@ with tab_inspect:
 with tab_analytics:
     st.markdown("#### Inspection History")
 
-    if st.button("🔄 Refresh", key="refresh_analytics"):
+    a1, a2 = st.columns([1, 1])
+    if a1.button("🔄 Refresh", key="refresh_analytics"):
+        st.rerun()
+    if a2.button("Clear records", key="clear_analytics"):
+        if DB_PATH.exists():
+            with sqlite3.connect(DB_PATH) as con:
+                con.execute("DELETE FROM inspections")
+                con.commit()
         st.rerun()
 
     df = load_inspection_history()
