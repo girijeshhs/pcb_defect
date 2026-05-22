@@ -9,10 +9,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Mount the models directory so best.onnx is read at runtime.
-      # This avoids baking the ~60 MB ONNX weight file into the image,
-      # and lets you swap models without rebuilding the container.
-      - ./models:/app/models:ro   # :ro = read-only for safety
+      - ./models:/app/models:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python3", "-c",
@@ -31,10 +28,8 @@ services:
     ports:
       - "8501:8501"
     environment:
-      # Inside Docker, services communicate via their service name as hostname.
-      # "api" resolves to the backend container on the internal Docker network.
-      # Locally, the default fallback in app.py is http://127.0.0.1:8000/inspect.
       - API_URL=http://api:8000/inspect
+      - REPORT_URL=http://api:8000/generate_report
     depends_on:
       api:
         condition: service_healthy   # wait until /health passes before starting

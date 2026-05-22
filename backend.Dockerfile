@@ -13,13 +13,7 @@ WORKDIR /app
 # Copy and install deps before copying source — maximises Docker layer cache reuse.
 # If requirements.txt doesn't change, this layer is never rebuilt.
 COPY requirements.txt .
-RUN pip install --no-cache-dir \
-        fastapi \
-        uvicorn \
-        python-multipart \
-        onnxruntime \
-        opencv-python \
-        numpy
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy only the backend source — the model directory is mounted as a volume,
 # so best.onnx is never baked into the image (keeps the image size small).

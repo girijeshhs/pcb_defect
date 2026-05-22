@@ -1,24 +1,24 @@
 """
 PCB Defect Detection — Streamlit Client
 FastAPI backend: reads from API_URL env var (default: http://127.0.0.1:8000/inspect)
+Analytics tab: reads directly from inspections.db via sqlite3 + pandas
 """
 
 import os
+import sqlite3
 
 import cv2
 import numpy as np
+import pandas as pd
 import requests
 import streamlit as st
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-# Inside Docker, Compose sets API_URL=http://api:8000/inspect so the client
-# reaches the backend via Docker's internal DNS (service name = hostname).
-# Locally, the fallback points to localhost for direct uvicorn runs.
-API_URL = os.getenv("API_URL", "http://127.0.0.1:8000/inspect")
+API_URL     = os.getenv("API_URL",    "http://127.0.0.1:8000/inspect")
+REPORT_URL  = os.getenv("REPORT_URL", "http://127.0.0.1:8000/generate_report")
+DB_PATH     = os.getenv("DB_PATH",    "./inspections.db")
 
-# BGR tuples (not RGB) — cv2 drawing functions operate in BGR colour space.
-# Colours chosen for contrast against the dark green PCB solder-mask layer.
 DEFECT_COLORS = {
     "falsecopper":  (0,   200, 255),
     "missinghole":  (255, 50,  50 ),
@@ -42,7 +42,6 @@ def decode_image(uploaded_file) -> np.ndarray:
     """
     Streamlit gives a memory buffer, not a file path.
     frombuffer + imdecode replicates cv2.imread() from raw bytes.
-    imdecode always returns BGR — we convert to RGB only at display time.
     """
     raw = np.frombuffer(uploaded_file.read(), dtype=np.uint8)
     img = cv2.imdecode(raw, cv2.IMREAD_COLOR)
@@ -53,18 +52,16 @@ def decode_image(uploaded_file) -> np.ndarray:
 
 def draw_defects(img_bgr: np.ndarray, defects: list) -> np.ndarray:
     """
-    Draws colour-coded bounding boxes + label backgrounds onto a BGR image.
-    Coordinates from the API are already in the original image pixel space,
-    so no scaling is needed. We clamp to image bounds to prevent cv2 errors.
+    Colour-coded bounding boxes + label backgrounds on a BGR image.
+    Coordinates are already in original pixel space — no scaling needed.
     """
     h, w = img_bgr.shape[:2]
 
     for d in defects:
-        label   = f"{d['defect_type']}  {d['confidence']:.0%}"
-        color   = DEFECT_COLORS.get(d["defect_type"], DEFAULT_COLOR)
-        bbox    = d["bbox"]
+        label = f"{d['defect_type']}  {d['confidence']:.0%}"
+        color = DEFECT_COLORS.get(d["defect_type"], DEFAULT_COLOR)
+        bbox  = d["bbox"]
 
-        # Clamp float coords to valid integer pixel indices
         x1 = int(max(0, min(bbox[0], w - 1)))
         y1 = int(max(0, min(bbox[1], h - 1)))
         x2 = int(max(0, min(bbox[2], w - 1)))
@@ -72,11 +69,9 @@ def draw_defects(img_bgr: np.ndarray, defects: list) -> np.ndarray:
 
         cv2.rectangle(img_bgr, (x1, y1), (x2, y2), color, THICKNESS)
 
-        # Measure text to build a perfectly-fitting background rect
         (tw, th), baseline = cv2.getTextSize(label, FONT, FONT_SCALE, 1)
         lbl_h = th + baseline + 2 * PAD
 
-        # Place label above box; fall back to inside-top if near image edge
         if y1 - lbl_h - 6 >= 0:
             ly1, ly2 = y1 - lbl_h - 6, y1 - 6
         else:
@@ -84,7 +79,6 @@ def draw_defects(img_bgr: np.ndarray, defects: list) -> np.ndarray:
 
         lx2 = min(x1 + tw + 2 * PAD, w - 1)
 
-        # Draw filled background rect first, then text on top
         cv2.rectangle(img_bgr, (x1, ly1), (lx2, ly2), color, -1)
         cv2.putText(img_bgr, label,
                     (x1 + PAD, ly2 - baseline - PAD),
@@ -100,6 +94,25 @@ def call_api(img_bgr: np.ndarray, filename: str) -> dict:
                          timeout=30)
     resp.raise_for_status()
     return resp.json()
+
+
+def load_inspection_history() -> pd.DataFrame:
+    """Read all inspection records from SQLite and return a tidy DataFrame."""
+    if not os.path.exists(DB_PATH):
+        return pd.DataFrame()
+    with sqlite3.connect(DB_PATH) as con:
+        df = pd.read_sql_query(
+            "SELECT id, timestamp, status, latency_ms, defect_summary FROM inspections ORDER BY id",
+            con,
+        )
+    if df.empty:
+        return df
+
+    df["timestamp"]    = pd.to_datetime(df["timestamp"], utc=True)
+    df["defect_count"] = df["defect_summary"].apply(
+        lambda s: len(__import__("json").loads(s)) if s else 0
+    )
+    return df
 
 
 # ── Page config ────────────────────────────────────────────────────────────────
@@ -125,7 +138,7 @@ footer { visibility:hidden; }
 with st.sidebar:
     st.markdown("### 🎨 Defect Legend")
     for cls, bgr in DEFECT_COLORS.items():
-        hex_c = f"#{bgr[2]:02x}{bgr[1]:02x}{bgr[0]:02x}"   # BGR → RGB hex
+        hex_c = f"#{bgr[2]:02x}{bgr[1]:02x}{bgr[0]:02x}"
         st.markdown(
             f'<div style="display:flex;align-items:center;gap:8px;margin:3px 0">'
             f'<div style="width:13px;height:13px;border-radius:3px;background:{hex_c}"></div>'
@@ -134,79 +147,148 @@ with st.sidebar:
     st.divider()
     st.caption(f"API → `{API_URL}`")
 
-# ── Hero header & uploader ─────────────────────────────────────────────────────
+# ── Hero header ────────────────────────────────────────────────────────────────
 
 st.markdown("""
 <div class="hero">
   <h1>🔬 PCB Defect Inspector</h1>
-  <p>8-class YOLOv10m · Real-time OpenCV visualisation · FastAPI backend</p>
+  <p>8-class YOLOv10m · Real-time OpenCV visualisation · FastAPI + SQLite backend</p>
 </div>""", unsafe_allow_html=True)
 
-uploaded = st.file_uploader("Upload a PCB image", type=["jpg","jpeg","png","bmp","tiff"])
+# ── Tabs ───────────────────────────────────────────────────────────────────────
 
-# ── Main flow ──────────────────────────────────────────────────────────────────
+tab_inspect, tab_analytics = st.tabs(["🔬 Live Inspection", "📊 Analytics Dashboard"])
 
-if uploaded:
-    try:
-        img_bgr = decode_image(uploaded)
-    except ValueError as e:
-        st.error(str(e)); st.stop()
+# ══ Tab 1: Live Inspection ═════════════════════════════════════════════════════
 
-    with st.spinner("Inspecting…"):
+with tab_inspect:
+    uploaded = st.file_uploader("Upload a PCB image", type=["jpg","jpeg","png","bmp","tiff"])
+
+    if uploaded:
         try:
-            result = call_api(img_bgr, uploaded.name)
-        except requests.exceptions.ConnectionError:
-            st.error(f"Cannot reach API at `{API_URL}`. Is the server running?"); st.stop()
-        except requests.exceptions.HTTPError as e:
-            st.error(f"API error: {e}"); st.stop()
+            img_bgr = decode_image(uploaded)
+        except ValueError as e:
+            st.error(str(e)); st.stop()
 
-    status    = result.get("status", "UNKNOWN")
-    latency   = result.get("latency_ms", 0.0)
-    defects   = result.get("details", [])
-    n_defects = result.get("defects_found", len(defects))
-    img_h, img_w = img_bgr.shape[:2]
+        with st.spinner("Inspecting…"):
+            try:
+                result = call_api(img_bgr, uploaded.name)
+            except requests.exceptions.ConnectionError:
+                st.error(f"Cannot reach API at `{API_URL}`. Is the server running?"); st.stop()
+            except requests.exceptions.HTTPError as e:
+                st.error(f"API error: {e}"); st.stop()
 
-    # Metrics row
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Status",      status)
-    c2.metric("Latency",     f"{latency:.1f} ms")
-    c3.metric("Defects",     n_defects)
-    c4.metric("Resolution",  f"{img_w}×{img_h}")
+        status    = result.get("status", "UNKNOWN")
+        latency   = result.get("latency_ms", 0.0)
+        defects   = result.get("details", [])
+        n_defects = result.get("defects_found", len(defects))
+        img_h, img_w = img_bgr.shape[:2]
 
-    # Draw annotations on a copy, then convert BGR→RGB for Streamlit display.
-    # cv2 draws in BGR; st.image() expects RGB — one conversion at the end.
-    annotated_rgb = cv2.cvtColor(draw_defects(img_bgr.copy(), defects),
-                                 cv2.COLOR_BGR2RGB)
-    original_rgb  = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Status",     status)
+        c2.metric("Latency",    f"{latency:.1f} ms")
+        c3.metric("Defects",    n_defects)
+        c4.metric("Resolution", f"{img_w}×{img_h}")
 
-    st.divider()
-    col_l, col_r = st.columns(2, gap="medium")
-    col_l.markdown("**📷 Original**")
-    col_l.image(original_rgb,  use_container_width=True)
-    col_r.markdown("**🔬 Annotated**")
-    col_r.image(annotated_rgb, use_container_width=True)
+        annotated_rgb = cv2.cvtColor(draw_defects(img_bgr.copy(), defects), cv2.COLOR_BGR2RGB)
+        original_rgb  = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
-    # Defect table
-    if defects:
         st.divider()
-        st.markdown("**📋 Detections**")
-        for i, d in enumerate(defects, 1):
-            bgr     = DEFECT_COLORS.get(d["defect_type"], DEFAULT_COLOR)
-            hex_c   = f"#{bgr[2]:02x}{bgr[1]:02x}{bgr[0]:02x}"
-            b       = d["bbox"]
-            st.markdown(
-                f'`{i}` &nbsp; '
-                f'<span style="background:{hex_c};color:#000;padding:1px 7px;'
-                f'border-radius:4px;font-size:.82rem">{d["defect_type"]}</span> &nbsp; '
-                f'**{d["confidence"]:.1%}** &nbsp; '
-                f'<span style="color:#888;font-size:.82rem">'
-                f'({b[0]:.0f},{b[1]:.0f})→({b[2]:.0f},{b[3]:.0f})</span>',
-                unsafe_allow_html=True)
+        col_l, col_r = st.columns(2, gap="medium")
+        col_l.markdown("**📷 Original**")
+        col_l.image(original_rgb,  use_container_width=True)
+        col_r.markdown("**🔬 Annotated**")
+        col_r.image(annotated_rgb, use_container_width=True)
+
+        if defects:
+            st.divider()
+            st.markdown("**📋 Detections**")
+            for i, d in enumerate(defects, 1):
+                bgr   = DEFECT_COLORS.get(d["defect_type"], DEFAULT_COLOR)
+                hex_c = f"#{bgr[2]:02x}{bgr[1]:02x}{bgr[0]:02x}"
+                b     = d["bbox"]
+                st.markdown(
+                    f'`{i}` &nbsp; '
+                    f'<span style="background:{hex_c};color:#000;padding:1px 7px;'
+                    f'border-radius:4px;font-size:.82rem">{d["defect_type"]}</span> &nbsp; '
+                    f'**{d["confidence"]:.1%}** &nbsp; '
+                    f'<span style="color:#888;font-size:.82rem">'
+                    f'({b[0]:.0f},{b[1]:.0f})→({b[2]:.0f},{b[3]:.0f})</span>',
+                    unsafe_allow_html=True)
+        else:
+            st.success("✅ No defects — board passed inspection.")
+
+        # ── QA Report (FAIL only) ──────────────────────────────────────────────
+        if status == "FAIL":
+            st.divider()
+            if st.button("📝 Generate QA Report", key="qa_report"):
+                with st.spinner("Generating report via LLM…"):
+                    try:
+                        resp = requests.post(REPORT_URL, json=result, timeout=30)
+                        resp.raise_for_status()
+                        report_text = resp.json().get("report", "(no report returned)")
+                        st.markdown("**🧾 QA Incident Report**")
+                        st.info(report_text)
+                    except requests.exceptions.HTTPError as e:
+                        st.error(f"Report generation failed: {e}")
+                    except requests.exceptions.ConnectionError:
+                        st.error(f"Cannot reach API at `{REPORT_URL}`.")
+
+        with st.expander("Raw JSON"):
+            st.json(result)
+
     else:
-        st.success("✅ No defects — board passed inspection.")
+        st.info("Upload a PCB image above to start inspection.", icon="ℹ️")
 
-    with st.expander("Raw JSON"):
-        st.json(result)
+# ══ Tab 2: Analytics Dashboard ═════════════════════════════════════════════════
 
-else:
-    st.info("Upload a PCB image above to start inspection.", icon="ℹ️")
+with tab_analytics:
+    st.markdown("#### Inspection History")
+
+    if st.button("🔄 Refresh", key="refresh_analytics"):
+        st.rerun()
+
+    df = load_inspection_history()
+
+    if df.empty:
+        st.info("No inspection records yet. Run some inspections first.", icon="📭")
+    else:
+        # ── KPI row ───────────────────────────────────────────────────────────
+        total      = len(df)
+        n_pass     = (df["status"] == "PASS").sum()
+        n_fail     = (df["status"] == "FAIL").sum()
+        ratio_str  = f"{n_pass}/{n_fail}" if n_fail else f"{n_pass} / 0"
+        avg_lat    = df["latency_ms"].mean()
+        total_def  = df["defect_count"].sum()
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Total Inspections", total)
+        k2.metric("Pass / Fail",        ratio_str)
+        k3.metric("Avg Latency",        f"{avg_lat:.1f} ms")
+        k4.metric("Total Defects Found", int(total_def))
+
+        st.divider()
+
+        # ── Defects-over-time line chart ──────────────────────────────────────
+        st.markdown("**📈 Defects Found per Inspection**")
+        chart_df = df[["timestamp", "defect_count"]].set_index("timestamp")
+        st.line_chart(chart_df, y="defect_count", use_container_width=True)
+
+        st.divider()
+
+        # ── Pass/Fail breakdown bar chart ──────────────────────────────────────
+        st.markdown("**🟢 Pass / 🔴 Fail Distribution**")
+        status_counts = df["status"].value_counts().reset_index()
+        status_counts.columns = ["status", "count"]
+        st.bar_chart(status_counts.set_index("status"), use_container_width=True)
+
+        st.divider()
+
+        # ── Raw records table ──────────────────────────────────────────────────
+        with st.expander("📄 Raw Records"):
+            st.dataframe(
+                df[["id", "timestamp", "status", "latency_ms", "defect_count"]]
+                  .sort_values("id", ascending=False),
+                use_container_width=True,
+                hide_index=True,
+            )
