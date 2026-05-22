@@ -4,6 +4,7 @@ FastAPI backend: reads from API_URL env var (default: http://127.0.0.1:8000/insp
 Analytics tab: reads directly from inspections.db via sqlite3 + pandas
 """
 
+import hashlib
 import os
 import sqlite3
 from pathlib import Path
@@ -38,12 +39,12 @@ PAD        = 4
 
 # ── Helper functions ───────────────────────────────────────────────────────────
 
-def decode_image(uploaded_file) -> np.ndarray:
+def decode_image(raw_bytes: bytes) -> np.ndarray:
     """
     Streamlit gives a memory buffer, not a file path.
     frombuffer + imdecode replicates cv2.imread() from raw bytes.
     """
-    raw = np.frombuffer(uploaded_file.read(), dtype=np.uint8)
+    raw = np.frombuffer(raw_bytes, dtype=np.uint8)
     img = cv2.imdecode(raw, cv2.IMREAD_COLOR)
     if img is None:
         raise ValueError("Could not decode image — file may be corrupt.")
@@ -165,18 +166,25 @@ with tab_inspect:
     uploaded = st.file_uploader("Upload a PCB image", type=["jpg","jpeg","png","bmp","tiff"])
 
     if uploaded:
+        raw_bytes = uploaded.getvalue()
+        upload_sig = hashlib.md5(raw_bytes).hexdigest()
         try:
-            img_bgr = decode_image(uploaded)
+            img_bgr = decode_image(raw_bytes)
         except ValueError as e:
             st.error(str(e)); st.stop()
 
-        with st.spinner("Inspecting…"):
-            try:
-                result = call_api(img_bgr, uploaded.name)
-            except requests.exceptions.ConnectionError:
-                st.error(f"Cannot reach API at `{API_URL}`. Is the server running?"); st.stop()
-            except requests.exceptions.HTTPError as e:
-                st.error(f"API error: {e}"); st.stop()
+        if st.session_state.get("last_upload_sig") != upload_sig:
+            with st.spinner("Inspecting…"):
+                try:
+                    result = call_api(img_bgr, uploaded.name)
+                except requests.exceptions.ConnectionError:
+                    st.error(f"Cannot reach API at `{API_URL}`. Is the server running?"); st.stop()
+                except requests.exceptions.HTTPError as e:
+                    st.error(f"API error: {e}"); st.stop()
+            st.session_state["last_upload_sig"] = upload_sig
+            st.session_state["last_result"] = result
+        else:
+            result = st.session_state.get("last_result", {})
 
         status    = result.get("status", "UNKNOWN")
         latency   = result.get("latency_ms", 0.0)
@@ -237,42 +245,9 @@ with tab_analytics:
     if df.empty:
         st.info("No inspection records yet. Run some inspections first.", icon="📭")
     else:
-        # ── KPI row ───────────────────────────────────────────────────────────
-        total      = len(df)
-        n_pass     = (df["status"] == "PASS").sum()
-        n_fail     = (df["status"] == "FAIL").sum()
-        ratio_str  = f"{n_pass}/{n_fail}" if n_fail else f"{n_pass} / 0"
-        avg_lat    = df["latency_ms"].mean()
-        total_def  = df["defect_count"].sum()
-
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Total Inspections", total)
-        k2.metric("Pass / Fail",        ratio_str)
-        k3.metric("Avg Latency",        f"{avg_lat:.1f} ms")
-        k4.metric("Total Defects Found", int(total_def))
-
-        st.divider()
-
-        # ── Defects-over-time line chart ──────────────────────────────────────
-        st.markdown("**📈 Defects Found per Inspection**")
-        chart_df = df[["timestamp", "defect_count"]].set_index("timestamp")
-        st.line_chart(chart_df, y="defect_count", use_container_width=True)
-
-        st.divider()
-
-        # ── Pass/Fail breakdown bar chart ──────────────────────────────────────
-        st.markdown("**🟢 Pass / 🔴 Fail Distribution**")
-        status_counts = df["status"].value_counts().reset_index()
-        status_counts.columns = ["status", "count"]
-        st.bar_chart(status_counts.set_index("status"), use_container_width=True)
-
-        st.divider()
-
-        # ── Raw records table ──────────────────────────────────────────────────
-        with st.expander("📄 Raw Records"):
-            st.dataframe(
-                df[["id", "timestamp", "status", "latency_ms", "defect_count"]]
-                  .sort_values("id", ascending=False),
-                use_container_width=True,
-                hide_index=True,
-            )
+        st.dataframe(
+            df[["id", "timestamp", "status", "latency_ms", "defect_count"]]
+              .sort_values("id", ascending=False),
+            use_container_width=True,
+            hide_index=True,
+        )
