@@ -25,7 +25,7 @@ REPO_ROOT   = Path(__file__).resolve().parent
 MODEL_PATH  = REPO_ROOT / "models" / "best.onnx"
 INPUT_SIZE  = 640
 CONF_THRESH = 0.45
-DB_URL      = f"sqlite:///{(REPO_ROOT / 'inspections.db')}"
+DB_URL      = f"sqlite:///{(REPO_ROOT / 'data' / 'inspections.db')}"
 
 CLASSES = [
     "falsecopper", "missinghole", "mousebite", "opencircuit",
