@@ -218,22 +218,6 @@ with tab_inspect:
         else:
             st.success("✅ No defects — board passed inspection.")
 
-        # ── QA Report (FAIL only) ──────────────────────────────────────────────
-        if status == "FAIL":
-            st.divider()
-            if st.button("📝 Generate QA Report", key="qa_report"):
-                with st.spinner("Generating report via LLM…"):
-                    try:
-                        resp = requests.post(REPORT_URL, json=result, timeout=30)
-                        resp.raise_for_status()
-                        report_text = resp.json().get("report", "(no report returned)")
-                        st.markdown("**🧾 QA Incident Report**")
-                        st.info(report_text)
-                    except requests.exceptions.HTTPError as e:
-                        st.error(f"Report generation failed: {e}")
-                    except requests.exceptions.ConnectionError:
-                        st.error(f"Cannot reach API at `{REPORT_URL}`.")
-
         with st.expander("Raw JSON"):
             st.json(result)
 
