@@ -192,3 +192,4 @@ During development, several complex architectural problems were tackled:
 ## Contributor
 
 - **Girijesh S**
+docker compose -f config/docker-compose.yml up --build
